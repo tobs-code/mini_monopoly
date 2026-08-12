@@ -1,0 +1,10 @@
+{
+  "split": "S0",
+  "type": "iid_baseline",
+  "test_frac": 0.2,
+  "seed": 0,
+  "train_file": "train_games_so0_n200_always_buy-conservative-random_S0.jsonl",
+  "test_file": "test_games_so0_n200_always_buy-conservative-random_S0.jsonl",
+  "n_train_games": 160,
+  "n_test_games": 40
+}

@@ -1,0 +1,18 @@
+{
+  "split": "S1",
+  "type": "novel_state_composition",
+  "held_out_pairs": [
+    [
+      500,
+      150
+    ],
+    [
+      600,
+      200
+    ]
+  ],
+  "train_file": "train_games_so0_n200_always_buy-conservative-random_S1.jsonl",
+  "test_file": "test_games_so0_n200_always_buy-conservative-random_S1.jsonl",
+  "n_train_games": 187,
+  "n_test_games": 13
+}

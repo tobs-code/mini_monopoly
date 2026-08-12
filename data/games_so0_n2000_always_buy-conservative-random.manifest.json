@@ -1,0 +1,16 @@
+{
+  "run_id": "so0_n2000_always_buy-conservative-random",
+  "num_games": 2000,
+  "seed_offset": 0,
+  "game_id_start": 0,
+  "game_id_end": 1999,
+  "board_size": 12,
+  "num_players": 3,
+  "max_turns": 40,
+  "policies": [
+    "always_buy",
+    "conservative",
+    "random"
+  ],
+  "output_file": "games_so0_n2000_always_buy-conservative-random.jsonl"
+}

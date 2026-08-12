@@ -1,0 +1,12 @@
+# Trainings-Artefakte (Checkpoints, ~40 MB/Datei) — reproduzierbar via training/train.py
+runs/
+
+# Generierte Datensätze + abgeleitete Splits — reproduzierbar via data/generate.py / data/splits.py
+data/*.jsonl
+data/splits/*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
