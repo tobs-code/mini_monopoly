@@ -1,0 +1,23 @@
+{
+  "merge_type": "mixed_h2_affordability",
+  "mix_seed": 7,
+  "sources": [
+    {
+      "file": "games_so0_n2000_always_buy-conservative-random.jsonl",
+      "n_games": 2000
+    },
+    {
+      "file": "games_so9001_n800_always_buy-conservative-random_sc400.jsonl",
+      "n_games": 800
+    }
+  ],
+  "n_total_games": 2800,
+  "game_id_min": 0,
+  "game_id_max": 200799,
+  "output_file": "games_mixed_h2.jsonl",
+  "n_policies": 3,
+  "start_capitals_present": [
+    400,
+    1000
+  ]
+}

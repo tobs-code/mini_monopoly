@@ -23,11 +23,12 @@ from simulator.game import play_game
 from simulator.policies import POLICIES
 
 
-def make_run_id(seed_offset: int, num_games: int, policies: list[str]) -> str:
+def make_run_id(seed_offset: int, num_games: int, policies: list[str], start_capital: int = 1000) -> str:
     """Config-Hash für Dateinamen (Kernprinzip §8: jeder Datensatz muss
     eindeutig seiner Erzeugungs-Config zuordenbar sein)."""
     policy_tag = "-".join(sorted(policies))
-    return f"so{seed_offset}_n{num_games}_{policy_tag}"
+    cap_tag = "" if start_capital == 1000 else f"_sc{start_capital}"
+    return f"so{seed_offset}_n{num_games}_{policy_tag}{cap_tag}"
 
 
 def generate(
@@ -39,6 +40,7 @@ def generate(
     max_turns: int = 40,
     policies: list[str] | None = None,
     game_id_start: int = 0,
+    start_capital: int = 1000,
 ) -> str:
     """Generiert num_games Partien und schreibt sie als JSONL + Config-Manifest.
 
@@ -48,12 +50,17 @@ def generate(
     werden. Beispiel: Lauf 1 mit game_id_start=0, Lauf 2 mit
     game_id_start=100000 -> keine Überschneidung möglich.
 
+    start_capital: Startkapital jedes Spielers. Default 1000 (Hauptkorpus). Für
+    den H2-Diagnose-Datensatz (siehe §6b) bewusst niedriger (z.B. 200–250), um
+    echte Unaffordability-Fälle (cash < price) zu erzeugen. Board/Preisliste
+    bleiben unverändert (fix, §4.1-Lehre) — es wird NUR das Startkapital variiert.
+
     Rückgabe: Pfad zur erzeugten JSONL-Datei.
     """
     if policies is None:
         policies = list(POLICIES.keys())
 
-    run_id = make_run_id(seed_offset, num_games, policies)
+    run_id = make_run_id(seed_offset, num_games, policies, start_capital)
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"games_{run_id}.jsonl")
     manifest_path = os.path.join(output_dir, f"games_{run_id}.manifest.json")
@@ -72,6 +79,7 @@ def generate(
                 board_size=board_size,
                 num_players=num_players,
                 max_turns=max_turns,
+                start_capital=start_capital,
             )
             f.write(json.dumps(log.to_dict(), ensure_ascii=False) + "\n")
 
@@ -84,6 +92,7 @@ def generate(
         "board_size": board_size,
         "num_players": num_players,
         "max_turns": max_turns,
+        "start_capital": start_capital,
         "policies": policies,
         "output_file": os.path.basename(output_path),
     }
@@ -110,6 +119,8 @@ def main() -> None:
         default=None,
         help="Zu mischende Policies (Default: alle drei)",
     )
+    parser.add_argument("--start-capital", type=int, default=1000,
+                        help="Startkapital je Spieler (Default 1000; H2-Diagnose-Datensatz niedriger)")
     args = parser.parse_args()
 
     generate(
@@ -121,6 +132,7 @@ def main() -> None:
         max_turns=args.max_turns,
         policies=args.policies,
         game_id_start=args.game_id_start,
+        start_capital=args.start_capital,
     )
 
 

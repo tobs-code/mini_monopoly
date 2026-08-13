@@ -45,8 +45,6 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 from data.tokenizer import MiniTokenizer
 from data.splits import load_games
 
-CLS_TOK = {"P0": "P", "P1": "P", "P2": "P", "BUY": "BUY_PASS", "PASS": "BUY_PASS",
-           "PAY_RENT": "PAY_RENT"}
 CLS_ORDER = ["P", "BUY_PASS", "PAY_RENT"]
 
 
@@ -57,10 +55,6 @@ def build_model(manifest, ckpt_state, device):
     model.load_state_dict(ckpt_state["model"])
     model.eval()
     return model
-
-
-def cls_of(token_str: str) -> str | None:
-    return CLS_TOK.get(token_str)
 
 
 def counter_class(true_roll: int, query_roll: int, player: int, state: dict,
@@ -106,30 +100,37 @@ def main() -> None:
     # Am P-Token sagt das Modell den nächsten Token voraus = Event (BUY/PASS/PAY_RENT)
     # oder nächster Spieler-P (kein Event). Der Würfelwert (-> Position) ist an dieser
     # Stelle bereits im Kontext sichtbar.
-    decisions = []  # (seq ids bis inkl. P-nach-dice, pos, player, roll, true_cls, [counter per d'])
+    decisions = []  # (seq ids bis inkl. P-nach-dice, pos, roller, roll, true_cls, [counter per d'])
     for g in val_games:
         events = g["events"]
         ids, raw = tokenizer.tokenize_events_aligned(events)
         n = len(events)
-        for j in range(1, n):
+        for j in range(3, n):
             if not (events[j].startswith("P") and events[j][1:].isdigit()):
                 continue
-            if not (j >= 2 and events[j - 2] == "ROLL" and events[j - 1].isdigit()):
+            if not (events[j - 2] == "ROLL" and events[j - 1].isdigit()):
                 continue  # nur P-NACH-dice
+            # Roller = P-Token VOR [ROLL, d] (events[j-3]); events[j] ist der
+            # P-nach-dice: derselbe Spieler bei Event, sonst der nächste Spieler.
+            roller = int(events[j - 3][1:])
             pos = raw.index(j)
             if pos + 1 >= len(ids):
                 continue  # kein Ziel-Token
             roll = int(events[j - 1])
-            player = int(events[j][1:])
-            true_tok = tokenizer.itos[ids[pos + 1]]
-            true_cls = cls_of(true_tok)
-            if true_cls is None:
-                continue
+            nxt = tokenizer.itos[ids[pos + 1]]
+            if nxt in ("BUY", "PASS"):
+                true_cls = "BUY_PASS"
+            elif nxt == "PAY_RENT":
+                true_cls = "PAY_RENT"
+            elif nxt == "ROLL":
+                true_cls = "P"  # kein Event: eigenes/preisloses Feld -> nächster Zug
+            else:
+                continue  # MONEY/Digit-Token sind kein Entscheidungspunkt
             counters = []
             for d2 in range(1, 7):
-                counters.append(counter_class(roll, d2, player, g["states"][j - 1],
+                counters.append(counter_class(roll, d2, roller, g["states"][j - 1],
                                               g["prices"], g["board_size"]))
-            decisions.append((ids[:pos + 1], pos, player, roll, true_cls, counters))
+            decisions.append((ids[:pos + 1], pos, roller, roll, true_cls, counters))
 
     if args.max_decisions:
         decisions = decisions[:args.max_decisions]
@@ -153,22 +154,30 @@ def main() -> None:
         return batch.to(device)
 
     def gather_cls_probs(logits, pos_list):
-        """Logits [B, L, V] an pos je Zeile -> Klassenwahrscheinlichkeiten [B, 3]."""
+        """Logits [B, L, V] an pos je Zeile -> Klassenwahrscheinlichkeiten [B, 3].
+
+        Am Entscheidungspunkt (P-nach-dice) sagt das Modell den nächsten Token
+        voraus. Klassen-Token (Reihenfolge = CLS_ORDER):
+          'P'        -> 'ROLL'  (kein Event: nächster Spieler würfelt weiter)
+          'BUY_PASS' -> logsumexp(BUY, PASS)
+          'PAY_RENT' -> 'PAY_RENT'
+        """
         B = logits.shape[0]
         idx = torch.arange(B)
         l = logits[idx, torch.tensor(pos_list, device=logits.device)]
-        ids = torch.tensor([tokenizer.stoi[t] for t in CLS_TOK], device=l.device)
-        p_tok = l[:, ids[:3]].logsumexp(1)
-        bp_tok = l[:, ids[3:5]].logsumexp(1)
-        pr_tok = l[:, ids[5]]
+        st = tokenizer.stoi
+        p_tok = l[:, st["ROLL"]]
+        bp_tok = l[:, [st["BUY"], st["PASS"]]].logsumexp(1)
+        pr_tok = l[:, st["PAY_RENT"]]
         return torch.softmax(torch.stack([p_tok, bp_tok, pr_tok], dim=1), dim=1)
 
     pos_list = [d[1] for d in decisions]
     seqs = [d[0] for d in decisions]
 
     B = args.batch_size
-    acc_true_mod = {d2: [0, 0] for d2 in range(1, 7)}      # do-over accuracy: Modell sagt kontrafaktische Klasse?
-    acc_true_clean = [0, 0]                                  # clean: Modell sagt wahre Klasse?
+    # acc_true_mod[d2][cls][hit,total]  -- do-over: Modell sagt kontrafaktische Klasse?
+    acc_true_mod = {d2: {c: [0, 0] for c in CLS_ORDER} for d2 in range(1, 7)}
+    acc_true_clean = {c: [0, 0] for c in CLS_ORDER}   # clean: Modell sagt wahre Klasse?
     F = {L: [] for L in range(n_layers)}                     # recovery pro Layer
     n_eff = 0
 
@@ -194,11 +203,11 @@ def main() -> None:
             idxs = torch.arange(len(chunk))
             pos_t = torch.tensor(pos_c)
             res_c = {L: rc[L][idxs, pos_t].cpu() for L in range(n_layers)}
-            # clean accuracy
+            # clean accuracy (per class)
             for b, tc in enumerate(true_cls):
-                acc_true_clean[1] += 1
+                acc_true_clean[tc][1] += 1
                 if pc[b].argmax().item() == CLS_ORDER.index(tc):
-                    acc_true_clean[0] += 1
+                    acc_true_clean[tc][0] += 1
 
             for d2 in range(1, 7):
                 repl = [tokenizer.stoi[f"D{d2}"] for _ in chunk]
@@ -207,12 +216,12 @@ def main() -> None:
                 rm = resid_dict(cache_m)
                 pm = gather_cls_probs(logits_m, pos_c)
                 res_m = {L: rm[L][idxs, pos_t].cpu() for L in range(n_layers)}
-                # do-over accuracy vs kontrafaktische Klasse
+                # do-over accuracy vs kontrafaktische Klasse (per class)
                 for b in range(len(chunk)):
-                    ccl = CLS_ORDER.index(counters[b][d2 - 1])
-                    acc_true_mod[d2][1] += 1
-                    if pm[b].argmax().item() == ccl:
-                        acc_true_mod[d2][0] += 1
+                    ccl = counters[b][d2 - 1]
+                    acc_true_mod[d2][ccl][1] += 1
+                    if pm[b].argmax().item() == CLS_ORDER.index(ccl):
+                        acc_true_mod[d2][ccl][0] += 1
                 # Patch pro Layer (auf ORIGINAL-Input, resid_post[L,pos] = Wrong-Roll-Residual)
                 for L in range(n_layers):
                     rep = res_m[L].to(device)
@@ -239,12 +248,19 @@ def main() -> None:
     print("Modell-Vorhersage unter Roll=d' stimmt mit KONTRAFAKTISCH-korrektem Event "
           "(d') überein:")
     for d2 in range(1, 7):
-        h, t = acc_true_mod[d2]
-        print(f"  Würfel d'={d2}: {h/t:6.1%}  ({h:,}/{t:,})")
-    h, t = acc_true_clean
-    print(f"  [Kontrolle] Original d=d': {h/t:6.1%} (Modell sagt TRUE-Event, "
+        row = {c: acc_true_mod[d2][c] for c in CLS_ORDER}
+        hits = sum(v[0] for v in row.values())
+        tots = sum(v[1] for v in row.values())
+        parts = "  ".join(f"{c}:{h}/{t}" for c, (h, t) in row.items())
+        print(f"  Würfel d'={d2}: {hits/max(tots,1):6.1%}  [{parts}]")
+    h, t = sum(acc_true_clean[c][0] for c in CLS_ORDER), sum(acc_true_clean[c][1] for c in CLS_ORDER)
+    print(f"  [Kontrolle] Original d=d': {h/max(t,1):6.1%} (Modell sagt TRUE-Event, "
           f"sollte hoch sein)")
     print("  Zufall-Baseline je Klasse ~33% (3 Klassen) / je nach Randverteilung.")
+    print("\n  Per-Klassen-Accuracy (clean, zur Unterscheidung Grammatik vs. Position):")
+    for c in CLS_ORDER:
+        hh, tt = acc_true_clean[c]
+        print(f"    {c:9s}: {hh/max(tt,1):6.1%}  ({hh:,}/{tt:,})")
 
     print(f"\n=== 2) Residual-Patch-Recovery (resid_post[L, Würfel-Position]) ===")
     print("F_L = |patch-clean| / |mod-clean| (0 = kein Effekt, 1 = voller Effekt):")

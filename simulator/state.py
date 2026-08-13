@@ -20,6 +20,7 @@ class GameState:
     num_players: int
     prices: list[int]              # prices[field_idx] -> Kaufpreis (0 = kein Grundstück, z.B. Start/Ereignisfeld)
     rent_rate: float = 0.5         # Miete = rent_rate * price
+    start_capital: int = 1000      # Startkapital jedes Spielers (Diagnose-Datensatz: niedriger, s. §6b)
 
     position: list[int] = field(default_factory=list)   # position[player] -> Feldindex
     cash: list[int] = field(default_factory=list)        # cash[player] -> Kontostand
@@ -32,7 +33,7 @@ class GameState:
         if not self.position:
             self.position = [0] * self.num_players
         if not self.cash:
-            self.cash = [1000] * self.num_players
+            self.cash = [self.start_capital] * self.num_players
         if not self.owner:
             self.owner = [None] * self.board_size
 

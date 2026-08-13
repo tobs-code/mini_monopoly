@@ -1,0 +1,17 @@
+{
+  "run_id": "so9001_n800_always_buy-conservative-random_sc400",
+  "num_games": 800,
+  "seed_offset": 9001,
+  "game_id_start": 200000,
+  "game_id_end": 200799,
+  "board_size": 12,
+  "num_players": 3,
+  "max_turns": 40,
+  "start_capital": 400,
+  "policies": [
+    "always_buy",
+    "conservative",
+    "random"
+  ],
+  "output_file": "games_so9001_n800_always_buy-conservative-random_sc400.jsonl"
+}

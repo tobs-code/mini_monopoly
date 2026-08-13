@@ -13,9 +13,10 @@ Methode:
   Memorisierungs-Confound).
 - Führt die Val-Spiele mit run_with_cache aus; Alignment Token->State über
   tokenize_events_aligned (Miet-Event = 5 Tokens, gleicher State).
-- Pro Layer ein linearer Probe (d_model -> 12 Positionen) JE Spieler, trainiert
-  auf 80% der (Token, Aktivierung)-Samples, ausgewertet auf 20% (held-out,
-  verhindert Probe-Overfitting).
+- Pro Layer ein Probe (d_model -> 12 Positionen) JE Spieler, trainiert auf 80% der
+  SPIELE (per-game-Split, Trajectory-Integrity §3: ganze Spiele in Train/Test,
+  kein pro-Sample-Mischen -> kein Leakage-Confound), ausgewertet auf den held-out
+  Spielen (verhindert Probe-Overfitting auf spiel-id-abhängige Nebenmerkmale).
 - Ausgabe: Tabelle Layer x Spieler -> Accuracy, plus Zufalls-/Majoritäts-Baseline.
 
 Nutzung:  (Conda-Env iprop, CUDA)
@@ -80,6 +81,7 @@ def collect_samples(model, tokenizer, games, n_ctx, device, batch_size=8):
     labels = {L: [[] for _ in range(n_players)] for L in range(n_layers)}
     token_labels = {L: [] for L in range(n_layers)}
     turn_labels = {L: [] for L in range(n_layers)}
+    game_sizes = []  # Sampleanzahl pro Spiel (in Verarbeitungsreihenfolge), fuer pro-Spiel-Split
 
     for start in range(0, len(games), batch_size):
         chunk = games[start:start + batch_size]
@@ -117,28 +119,27 @@ def collect_samples(model, tokenizer, games, n_ctx, device, batch_size=8):
                     turn_labels[L].append(state["current_player"])
                     for p in range(n_players):
                         labels[L][p].append(state["position"][p])
+            game_sizes.append(len(feats[0]))
         del cache
-    return feats, labels, token_labels, turn_labels, n_layers, d_model, n_players
+    return feats, labels, token_labels, turn_labels, n_layers, d_model, n_players, game_sizes
 
 
-def fit_probe(X, y, device, steps=500, lr=5e-3, nonlinear=False):
-    """Probe (d_model -> n_cls) auf 80/20-Split. linear oder MLP (hidden 128).
+def fit_probe(Xtr, ytr, Xte, yte, device, steps=500, lr=5e-3, nonlinear=False):
+    """Probe (d_model -> n_cls) auf bereits aufgeteiltem Train/Test (pro-Spiel-Split).
     Gibt (acc_tr, acc_te). MLP zeigt, ob das Merkmal ÜBERHAUPT (nicht-linear)
     aus dem Residual dekodierbar ist."""
-    X = X.float().to(device)
-    y = y.long().to(device)
-    n_cls = int(y.max().item()) + 1
-    n = X.shape[0]
-    n_tr = int(0.8 * n)
-    Xtr, Xte = X[:n_tr], X[n_tr:]
-    ytr, yte = y[:n_tr], y[n_tr:]
+    Xtr = Xtr.float().to(device)
+    Xte = Xte.float().to(device)
+    ytr = ytr.long().to(device)
+    yte = yte.long().to(device)
+    n_cls = int(ytr.max().item()) + 1
     if nonlinear:
         lin = torch.nn.Sequential(
-            torch.nn.Linear(X.shape[1], 128), torch.nn.ReLU(),
+            torch.nn.Linear(Xtr.shape[1], 128), torch.nn.ReLU(),
             torch.nn.Linear(128, n_cls),
         ).to(device)
     else:
-        lin = torch.nn.Linear(X.shape[1], n_cls).to(device)
+        lin = torch.nn.Linear(Xtr.shape[1], n_cls).to(device)
     opt = torch.optim.Adam(lin.parameters(), lr=lr)
     lossf = torch.nn.CrossEntropyLoss()
     for _ in range(steps):
@@ -191,40 +192,73 @@ def analyze_checkpoint(ckpt_path: str, probe_games, tokenizer, device, nonlinear
     manifest = ckpt["manifest"]
     model = build_model(manifest, ckpt, device)
     n_ctx = model.cfg.n_ctx
-    feats, labels, token_labels, turn_labels, n_layers, d_model, n_players = collect_samples(
+    feats, labels, token_labels, turn_labels, n_layers, d_model, n_players, game_sizes = collect_samples(
         model, tokenizer, probe_games, n_ctx, device)
 
+    # Pro-Spiel-Split (Trajectory-Integrity, §3): erste 80% der SPIELE -> Train,
+    # letzte 20% -> Test. game_sizes[k] = Sampleanzahl kumuliert durch Spiel k
+    # (0-indiziert); trenne nach Spiel n_tr_games-1.
+    n_games = len(game_sizes)
+    n_tr_games = max(1, int(0.8 * n_games))
+    tr_end = game_sizes[n_tr_games - 1]
+
+    def split(y_list):
+        yt = torch.tensor(y_list)
+        return yt[:tr_end], yt[tr_end:]
+
     # Sanity 1 (Token-ID) muss ~100% sein
-    sanity = [fit_probe(torch.stack(feats[L]), torch.tensor(token_labels[L]), device)[1]
-              for L in range(n_layers)]
-    # Sanity 2 (Current-Player)
-    turn = [fit_probe(torch.stack(feats[L]), torch.tensor(turn_labels[L]), device)[1]
-            for L in range(n_layers)]
-    # Position je Layer (Test-Acc, Layer-Mean über Spieler)
-    pos_te = []
+    sanity = []
     for L in range(n_layers):
         X = torch.stack(feats[L])
-        row = [fit_probe(X, torch.tensor(labels[L][p]), device, nonlinear=nonlinear)[1]
-               for p in range(n_players)]
-        pos_te.append(sum(row) / len(row))
+        ytr, yte = split(token_labels[L])
+        sanity.append(fit_probe(X[:tr_end], ytr, X[tr_end:], yte, device)[1])
+    # Sanity 2 (Current-Player)
+    turn = []
+    for L in range(n_layers):
+        X = torch.stack(feats[L])
+        ytr, yte = split(turn_labels[L])
+        turn.append(fit_probe(X[:tr_end], ytr, X[tr_end:], yte, device)[1])
+    # Position je Layer (Train- und Test-Acc, Layer-Mean über Spieler)
+    pos_te = []
+    pos_tr = []
+    for L in range(n_layers):
+        X = torch.stack(feats[L])
+        row_te, row_tr = [], []
+        for p in range(n_players):
+            ytr, yte = split(labels[L][p])
+            a_tr, a_te = fit_probe(X[:tr_end], ytr, X[tr_end:], yte,
+                                   device, nonlinear=nonlinear)
+            row_te.append(a_te)
+            row_tr.append(a_tr)
+        pos_te.append(sum(row_te) / len(row_te))
+        pos_tr.append(sum(row_tr) / len(row_tr))
     best_layer = max(range(n_layers), key=lambda L: pos_te[L])
     return {
         "step": ckpt["step"],
         "best_val_loss": ckpt["best_val_loss"],
         "best_pos_test": pos_te[best_layer],
+        "best_pos_train": pos_tr[best_layer],
         "pos_per_layer": pos_te,
+        "pos_train_per_layer": pos_tr,
         "turn_test": max(turn),
         "sanity_token": max(sanity),
         "n_layers": n_layers,
+        "n_games": n_games,
+        "n_tr_games": n_tr_games,
     }
 
 
 def make_plot(rows: list[dict], losses: dict[dict], out_png: str, n_layers: int) -> None:
-    """Plottet Position-Probe-Accuracy gegen Train- und Val-Loss pro Checkpoint."""
+    """Plottet Position-Probe-Accuracy gegen Train- und Val-Loss pro Checkpoint.
+
+    Rows werden nach Step aufsteigend sortiert, damit die Kurven monoton verlaufen
+    (unabhängig von der --ckpt-Eingabereihenfolge; ckpt_best.pt liegt i.d.R. mitten
+    im Intervall und wäre sonst ein Rückläufer im Plot)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    rows = sorted(rows, key=lambda r: r["step"])
     steps = [r["step"] for r in rows]
     pos = [r["best_pos_test"] for r in rows]
     turn = [r["turn_test"] for r in rows]
@@ -289,20 +323,22 @@ def main() -> None:
         tl, vl = losses.get(r["step"], (float("nan"), float("nan")))
         print(f"\n--- Checkpoint step {r['step']} (best_val {r['best_val_loss']:.4f}, "
               f"train {tl:.4f}, val {vl:.4f}) ---")
+        print(f"  pro-Spiel-Split: {r['n_tr_games']}/{r['n_games']} Spiele (train/test)")
         print(f"  Position-Probe test je Layer: {[f'{a:.1%}' for a in r['pos_per_layer']]}")
-        print(f"  best Position test: {r['best_pos_test']:.1%} | "
+        print(f"  Position-Probe train je Layer: {[f'{a:.1%}' for a in r['pos_train_per_layer']]}")
+        print(f"  best Position test: {r['best_pos_test']:.1%} (train {r['best_pos_train']:.1%}) | "
               f"Current-Player max: {r['turn_test']:.1%} | Sanity-Token max: {r['sanity_token']:.1%}")
 
     print(f"\n{'='*70}")
-    print(f"ZUSAMMENFASSUNG (linear={not args.nonlinear}, shared {len(probe_games)} Spiele):")
-    print(f"{'Step':>6} | {'train':>7} | {'val':>7} | {'Pos test':>8} | {'Player':>6} | {'Tok sanity':>9}")
+    print(f"ZUSAMMENFASSUNG (linear={not args.nonlinear}, per-Game-Split, shared {len(probe_games)} Spiele):")
+    print(f"{'Step':>6} | {'train':>7} | {'val':>7} | {'Pos te':>7} | {'Pos tr':>7} | {'Player':>6} | {'Tok':>6}")
     print("-" * 70)
     for r in rows:
         tl, vl = losses.get(r["step"], (float("nan"), float("nan")))
         tls = f"{tl:.3f}" if tl == tl else "  -  "
         vls = f"{vl:.3f}" if vl == vl else "  -  "
-        print(f"{r['step']:>6} | {tls:>7} | {vls:>7} | {r['best_pos_test']:>7.1%} | "
-              f"{r['turn_test']:>5.1%} | {r['sanity_token']:>8.1%}")
+        print(f"{r['step']:>6} | {tls:>7} | {vls:>7} | {r['best_pos_test']:>6.1%} | "
+              f"{r['best_pos_train']:>6.1%} | {r['turn_test']:>5.1%} | {r['sanity_token']:>5.1%}")
     make_plot(rows, losses, args.plot, rows[0]["n_layers"])
 
 

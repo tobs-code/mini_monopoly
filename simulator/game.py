@@ -85,12 +85,14 @@ def play_game(
     board_size: int = 12,
     num_players: int = 3,
     max_turns: int = 40,
+    start_capital: int = 1000,
 ) -> GameLog:
     rng = random.Random(seed)
     prices = make_prices(board_size, rng)
     policy_fn = POLICIES[policy_name]
 
-    state = GameState(board_size=board_size, num_players=num_players, prices=prices)
+    state = GameState(board_size=board_size, num_players=num_players, prices=prices,
+                      start_capital=start_capital)
     state.check_invariants()
 
     log = GameLog(
