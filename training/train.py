@@ -73,6 +73,42 @@ def default_config() -> dict:
     }
 
 
+def override_config(base: dict, args) -> dict:
+    """Erlaubt Architektur-Änderungen über die CLI (Kapazitäts-Test, §7).
+
+    Wird NUR beim frischen Lauf angewandt (beim Resume bestimmt die Config
+    im Checkpoint-Manifest, sonst bricht Resume-Nutzung). Consistenz-Helfer:
+    d_head und d_mlp werden aus d_model/n_heads abgeleitet, wenn nicht
+    explizit gesetzt.
+    """
+    arch = dict(base)
+    # Analyse-only-Flags abschalten: use_attn_result / use_split_qkv_input werden
+    # NUR von den Probes (run_with_cache) benötigt, sind aber reine
+    # Cache-Einstellungen und ändern NICHT die trainierten Gewichte. Beim Training
+    # blähen sie den Aktivierungs-Cache massiv auf (bei 8L/384/batch32 -> mehrere
+    # GB RAM, siehe h2_8l384_mixed-Fehlstart). Die Probes laden die Architektur
+    # aus dem Manifest und greifen ohnehin nur auf "resid_post" zu -> Flags dort
+    # nicht nötig. Rückwärtskompatibel: alte Manifests enthalten die Flags=True
+    # und bleiben unverändert nutzbar.
+    arch["use_attn_result"] = False
+    arch["use_split_qkv_input"] = False
+    if args.n_layers is not None:
+        arch["n_layers"] = args.n_layers
+    if args.d_model is not None:
+        arch["d_model"] = args.d_model
+    if args.n_heads is not None:
+        arch["n_heads"] = args.n_heads
+    if args.d_head is not None:
+        arch["d_head"] = args.d_head
+    else:
+        arch["d_head"] = arch["d_model"] // arch["n_heads"]
+    if args.d_mlp is not None:
+        arch["d_mlp"] = args.d_mlp
+    else:
+        arch["d_mlp"] = 4 * arch["d_model"]
+    return arch
+
+
 # ----------------------------------------------------------------------
 # Daten -> gepaddete Batches
 # ----------------------------------------------------------------------
@@ -222,6 +258,16 @@ def main() -> None:
                          "Beim Resume konstant halten, um LR-Sprünge zu vermeiden.")
     ap.add_argument("--weight-decay", type=float, default=0.1)
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--n-layers", type=int, default=None,
+                    help="Architektur-Override (Kapazitäts-Test): Anzahl Layer")
+    ap.add_argument("--d-model", type=int, default=None,
+                    help="Architektur-Override: d_model")
+    ap.add_argument("--n-heads", type=int, default=None,
+                    help="Architektur-Override: Anzahl Heads")
+    ap.add_argument("--d-head", type=int, default=None,
+                    help="Architektur-Override: d_head (Default: d_model // n_heads)")
+    ap.add_argument("--d-mlp", type=int, default=None,
+                    help="Architektur-Override: d_mlp (Default: 4 * d_model)")
     args = ap.parse_args()
 
     os.makedirs(args.run_dir, exist_ok=True)
@@ -254,10 +300,13 @@ def main() -> None:
         train_seqs = ckpt["train_seq_ids"]
         val_seqs = ckpt["val_seq_ids"]
         schedule_total = args.schedule_total or ckpt["schedule_total"]
+        # Beim Resume zählt NUR die im Checkpoint fixierte Architektur.
+        arch = manifest["architecture"]
         log_line(args.run_dir,
                  f"Resume von {os.path.basename(last)} (step {start_step}, "
                  f"epoch {epoch}, best_val {best_val:.4f}, schedule_total {schedule_total})")
     else:
+        arch = override_config(arch, args)
         games = load_games(args.data)
         train_games, val_games = split_s0(games, args.val_frac, args.seed)
         train_seqs = tokenize_games(train_games, tokenizer)
