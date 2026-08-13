@@ -1,0 +1,52 @@
+{
+  "merge_type": "mixed_h2d_boundary",
+  "mix_seed": 7,
+  "exclude_held_out": true,
+  "held_out_pairs": [
+    [
+      150,
+      150
+    ],
+    [
+      150,
+      300
+    ],
+    [
+      250,
+      150
+    ],
+    [
+      250,
+      300
+    ]
+  ],
+  "n_excluded_held_out_games": 1906,
+  "sources": [
+    {
+      "file": "games_so0_n2000_always_buy-conservative-random.jsonl",
+      "n_games": 1962
+    },
+    {
+      "file": "games_so9001_n800_always_buy-conservative-random_sc400.jsonl",
+      "n_games": 341
+    },
+    {
+      "file": "games_so7001_n800_always_buy-conservative-random_sc300.jsonl",
+      "n_games": 314
+    },
+    {
+      "file": "games_so7002_n1600_always_buy-conservative-random_sc300.jsonl",
+      "n_games": 677
+    }
+  ],
+  "n_total_games": 3294,
+  "game_id_min": 0,
+  "game_id_max": 321599,
+  "output_file": "games_mixed_h2d_boundary.jsonl",
+  "n_policies": 3,
+  "start_capitals_present": [
+    300,
+    400,
+    1000
+  ]
+}

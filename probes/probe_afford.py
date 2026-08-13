@@ -11,10 +11,14 @@ Was hier getestet wird (S1-held-out für Affordability):
   die Komposition `cash >= price` aus linear zugänglichen Teilen gelernt.
 
 Pre-registriertes S1-Design (2x2):
-  held-out cash-Werte {150, 250} x held-out price-Werte {150, 300}
-  = (150,150) aff, (250,150) aff, (150,300) unaff, (250,300) unaff
+  held-out cash-Werte {100, 300} x held-out price-Werte {150, 200}
+  = (100,150) unaff grenznah (diff=-50), (100,200) unaff,
+    (300,150) afford, (300,200) afford
   -> im Test balanciert 2 afford + 2 unafford (Komposition ohne Memo-Shortcut).
-  Verifiziert auf 800 cap-400-Spielen: diese 4 Paare erscheinen NICHT im Train.
+  Konfund-ok (alle 3 Policies gut durchmischt); gewaehlt via Design-Search
+  (tools/s1_design_search.py, docs/06 7d-2) als best-effort S1-Test unter
+  struktureller Simulator-Kopplung (Einzelwert-Coverage niedrig, min ~178).
+  Single Source of Truth: data/s1_design.py (identisch zu data/merge_corpora.py).
 
 Metriken:
   - Acc auf den held-out-Paar-Punkten (nur Testregion) — der S1-Kern-Test.
@@ -53,11 +57,8 @@ sys.path.insert(0, ROOT)
 
 from data.tokenizer import MiniTokenizer
 from data.splits import load_games, decision_points
+from data.s1_design import HELD_OUT_PAIRS, CASH_VALUES, PRICE_VALUES
 from probes.probe_position import build_model, fit_probe
-
-
-# Pre-registrierte S1-held-out-Paare (2x2, balanciert).
-HELD_OUT_PAIRS = {(150, 150), (250, 150), (150, 300), (250, 300)}
 
 
 def collect_decision_feats(model, tokenizer, games, n_ctx, device, batch_size=8):
@@ -199,6 +200,7 @@ def main() -> None:
         n_te = sum(te_mask)
         n_held = len(held_te_idx)
         print(f"\n--- Checkpoint {os.path.basename(path)} (step {ckpt['step']}) ---")
+        print(f"S1-Design: cash{CASH_VALUES} x price{PRICE_VALUES} | held-out {len(HELD_OUT_PAIRS)} Paare")
         print(f"Entscheidungspunkte gesamt: {len(meta)} | Train {n_tr} | Test {n_te} | held-out-test {n_held}")
 
         # Majority-Baseline in der held-out-Testregion (S1-Kern)
