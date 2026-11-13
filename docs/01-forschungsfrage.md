@@ -24,9 +24,5 @@ Das Mini-Monopoly-Spiel ist dabei **nur das kontrollierte Versuchssystem**, kein
 - **Chess-LLM-Nachfolgearbeiten** (Mei et al. 2025 u.a.): Analoge Befunde zu Othello, linear dekodierbare Board-Features, kausale Interventionen wirksam.
 - **"Revisiting the Othello World Model Hypothesis"** (2025): Zeigt, dass die Robustheit der Repräsentation vom Trainingsregime abhängt — Ergebnisse sind nicht automatisch trainingsdaten-invariant. Relevanz hier: deshalb bewusst mehrere Kauf-Policies mischen (siehe Abschnitt 4).
 
-## Bezug zu Tobs' eigener laufender Forschung
-
-Dieses Experiment ist konzeptionell verwandt mit Tobs' Hauptprojekt `llm-control-circuits` (mechanistische Interpretability an chinesischen Open-Source-LLMs, SAE-basierte Feature-Analyse, Layer-8–23-Kaskaden bei Zensur-Mechanismen). Der entscheidende Unterschied und Vorteil hier: **volle Ground Truth** des latenten Zustands ist bekannt — bei der Qwen-Arbeit muss Ground Truth erst mühsam rekonstruiert werden. Mini-Monopoly ist als kleines, sauberes Vorstudien-/Laborsystem gedacht, dessen Methodik (Probing, SAE, Interventionen) später wieder auf die Hauptforschung zurückwirken kann.
-
 ---
 
